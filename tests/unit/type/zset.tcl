@@ -471,6 +471,64 @@ start_server {tags {"zset"}} {
             assert_equal {b 2 c 3} [r zrange zsetc 0 -1 withscores]
         }
 
+        test "ZREMADD basic" {
+            r del zseta zsetb setc
+
+            # popping from empty set
+            assert_equal {} [r zremaddbyscore zseta -inf inf zsetb 20 withscores]
+            assert_equal {} [r zrange zsetb 0 100 withscores]
+            assert_equal {} [r zrange zseta 0 100 withscores]
+
+            # popping and adding to an empty set
+            r zadd zseta 10 x
+            assert_equal {} [r zremaddbyscore zseta 20 inf zsetb 20 withscores]
+            assert_equal {x 10} [r zremaddbyscore zseta 10 20 zsetb 20 withscores]
+            assert_equal {x 20} [r zrange zsetb 0 100 withscores]
+            assert_equal {} [r zrange zseta 0 100 withscores]
+            assert_equal 0 [r exists zseta]
+            assert_equal {} [r zremaddbyscore zseta -inf inf zsetb 20]
+
+            r zadd zseta 20 x 10 y 30 z
+
+            # popping and adding to a bad type object
+            r del zsetb
+            r sadd zsetb a
+            assert_error "*key*wrong*kind*value" {r zremaddbyscore zseta -inf inf zsetb 20}
+            assert_equal {y 10 x 20 z 30} [r zrange zseta 0 100 withscores]
+
+            # multi pop and add
+            r del zsetb
+            r zadd zsetb 15 a
+            assert_equal x [r zremaddbyscore zseta 15 30 zsetb 50]
+            assert_equal {a 15 x 50} [r zrange zsetb 0 100 withscores]
+            assert_equal {} [r zremaddbyscore zseta 0 5 zsetb 30]
+            assert_equal {a 15 x 50} [r zrange zsetb 0 100 withscores]
+            assert_equal y [r zremaddbyscore zseta 0 40 zsetb 30]
+            assert_equal {a 15 y 30 x 50} [r zrange zsetb 0 100 withscores]
+            assert_equal {} [r zremaddbyscore zseta 40 50 zsetb 10]
+            assert_equal {a 15 y 30 x 50} [r zrange zsetb 0 100 withscores]
+            assert_equal {z 30} [r zremaddbyscore zseta 0 50 zsetb 10 withscores]
+            assert_equal {z a y x} [r zrange zsetb 0 100]
+            assert_equal {} [r zrange zseta 0 100 withscores]
+            assert_equal {} [r zremaddbyscore zseta -inf inf zsetb 100]
+            assert_equal {z 10 a 15 y 30 x 50} [r zrange zsetb 0 100 withscores]
+
+            # pop and add with a bad score
+            r zadd zseta 25 b
+            assert_equal {b 25} [r zrange zseta 0 100 withscores]
+            assert_error "*not*float*" {r zremaddbyscore zseta -inf inf zsetb 6t}
+            assert_equal {z 10 a 15 y 30 x 50} [r zrange zsetb 0 100 withscores]
+            assert_equal {b 25} [r zrange zseta 0 100 withscores]
+
+            # popping from a bad type
+            assert_equal {} [r zremaddbyscore setc -inf inf zsetb 100]
+            r sadd setc a
+            assert_error "*key*wrong*kind*value" {r zremaddbyscore setc -inf inf zsetb 100}
+            assert_error "*key*wrong*kind*value" {r zremaddbyscore setc 0 0 zsetb 100}
+            assert_equal {z 10 a 15 y 30 x 50} [r zrange zsetb 0 100 withscores]
+            assert_equal {b 25} [r zrange zseta 0 100 withscores]
+        }
+
         foreach cmd {ZUNIONSTORE ZINTERSTORE} {
             test "$cmd with +inf/-inf scores - $encoding" {
                 r del zsetinf1 zsetinf2

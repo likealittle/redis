@@ -838,19 +838,19 @@ void zsetConvert(robj *zobj, int encoding) {
  *----------------------------------------------------------------------------*/
 
 /* This generic command implements both ZADD and ZINCRBY. */
-void zaddGenericCommand(redisClient *c, int incr) {
+int zaddGenericCommand(redisClient *c, robj *argv[], int argc, int incr, double *new_score) {
     static char *nanerr = "resulting score is not a number (NaN)";
-    robj *key = c->argv[1];
+    robj *key = argv[1];
     robj *ele;
     robj *zobj;
     robj *curobj;
     double score = 0, *scores, curscore = 0.0;
-    int j, elements = (c->argc-2)/2;
+    int j, elements = (argc-2)/2;
     int added = 0;
 
-    if (c->argc % 2) {
+    if (argc % 2) {
         addReply(c,shared.syntaxerr);
-        return;
+        return -1;
     }
 
     /* Start parsing all the scores, we need to emit any syntax error
@@ -858,11 +858,11 @@ void zaddGenericCommand(redisClient *c, int incr) {
      * either execute fully or nothing at all. */
     scores = zmalloc(sizeof(double)*elements);
     for (j = 0; j < elements; j++) {
-        if (getDoubleFromObjectOrReply(c,c->argv[2+j*2],&scores[j],NULL)
+        if (getDoubleFromObjectOrReply(c,argv[2+j*2],&scores[j],NULL)
             != REDIS_OK)
         {
             zfree(scores);
-            return;
+            return -1;
         }
     }
 
@@ -870,7 +870,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
     zobj = lookupKeyWrite(c->db,key);
     if (zobj == NULL) {
         if (server.zset_max_ziplist_entries == 0 ||
-            server.zset_max_ziplist_value < sdslen(c->argv[3]->ptr))
+            server.zset_max_ziplist_value < sdslen(argv[3]->ptr))
         {
             zobj = createZsetObject();
         } else {
@@ -881,7 +881,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
         if (zobj->type != REDIS_ZSET) {
             addReply(c,shared.wrongtypeerr);
             zfree(scores);
-            return;
+            return -1;
         }
     }
 
@@ -892,7 +892,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
             unsigned char *eptr;
 
             /* Prefer non-encoded element when dealing with ziplists. */
-            ele = c->argv[3+j*2];
+            ele = argv[3+j*2];
             if ((eptr = zzlFind(zobj->ptr,ele,&curscore)) != NULL) {
                 if (incr) {
                     score += curscore;
@@ -901,7 +901,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
                         /* Don't need to check if the sorted set is empty
                          * because we know it has at least one element. */
                         zfree(scores);
-                        return;
+                        return -1;
                     }
                 }
 
@@ -931,7 +931,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
             zskiplistNode *znode;
             dictEntry *de;
 
-            ele = c->argv[3+j*2] = tryObjectEncoding(c->argv[3+j*2]);
+            ele = argv[3+j*2] = tryObjectEncoding(argv[3+j*2]);
             de = dictFind(zs->dict,ele);
             if (de != NULL) {
                 curobj = dictGetKey(de);
@@ -944,7 +944,7 @@ void zaddGenericCommand(redisClient *c, int incr) {
                         /* Don't need to check if the sorted set is empty
                          * because we know it has at least one element. */
                         zfree(scores);
-                        return;
+                        return -1;
                     }
                 }
 
@@ -975,33 +975,34 @@ void zaddGenericCommand(redisClient *c, int incr) {
         }
     }
     zfree(scores);
-    if (incr) /* ZINCRBY */
-        addReplyDouble(c,score);
-    else /* ZADD */
-        addReplyLongLong(c,added);
+    if (new_score) *new_score = score;
+    return added;
 }
 
 void zaddCommand(redisClient *c) {
-    zaddGenericCommand(c,0);
+    int added = zaddGenericCommand(c, c->argv, c->argc, 0, NULL);
+    if (added >= 0) addReplyLongLong(c,added);
 }
 
 void zincrbyCommand(redisClient *c) {
-    zaddGenericCommand(c,1);
+    double score;
+    int added = zaddGenericCommand(c, c->argv, c->argc, 1, &score);
+    if (added >= 0) addReplyDouble(c,score);
 }
 
-void zremCommand(redisClient *c) {
-    robj *key = c->argv[1];
+int zremGenericCommand(redisClient *c, robj *argv[], int argc) {
+    robj *key = argv[1];
     robj *zobj;
     int deleted = 0, j;
 
     if ((zobj = lookupKeyWriteOrReply(c,key,shared.czero)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) return -1;
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         unsigned char *eptr;
 
-        for (j = 2; j < c->argc; j++) {
-            if ((eptr = zzlFind(zobj->ptr,c->argv[j],NULL)) != NULL) {
+        for (j = 2; j < argc; j++) {
+            if ((eptr = zzlFind(zobj->ptr,argv[j],NULL)) != NULL) {
                 deleted++;
                 zobj->ptr = zzlDelete(zobj->ptr,eptr);
                 if (zzlLength(zobj->ptr) == 0) {
@@ -1015,17 +1016,17 @@ void zremCommand(redisClient *c) {
         dictEntry *de;
         double score;
 
-        for (j = 2; j < c->argc; j++) {
-            de = dictFind(zs->dict,c->argv[j]);
+        for (j = 2; j < argc; j++) {
+            de = dictFind(zs->dict,argv[j]);
             if (de != NULL) {
                 deleted++;
 
                 /* Delete from the skiplist */
                 score = *(double*)dictGetVal(de);
-                redisAssertWithInfo(c,c->argv[j],zslDelete(zs->zsl,score,c->argv[j]));
+                redisAssertWithInfo(c,argv[j],zslDelete(zs->zsl,score,argv[j]));
 
                 /* Delete from the hash table */
-                dictDelete(zs->dict,c->argv[j]);
+                dictDelete(zs->dict,argv[j]);
                 if (htNeedsResize(zs->dict)) dictResize(zs->dict);
                 if (dictSize(zs->dict) == 0) {
                     dbDelete(c->db,key);
@@ -1041,7 +1042,12 @@ void zremCommand(redisClient *c) {
         signalModifiedKey(c->db,key);
         server.dirty += deleted;
     }
-    addReplyLongLong(c,deleted);
+    return deleted;
+}
+
+void zremCommand(redisClient *c) {
+    int deleted = zremGenericCommand(c, c->argv, c->argc);
+    if (deleted >= 0) addReplyLongLong(c,deleted);
 }
 
 void zremrangebyscoreCommand(redisClient *c) {
@@ -1800,9 +1806,9 @@ void zrevrangeCommand(redisClient *c) {
 }
 
 /* This command implements ZRANGEBYSCORE, ZREVRANGEBYSCORE. */
-void genericZrangebyscoreCommand(redisClient *c, int reverse) {
+int genericZrangebyscoreCommand(redisClient *c, robj *argv[], int argc, int reverse, robj *elements[]) {
     zrangespec range;
-    robj *key = c->argv[1];
+    robj *key = argv[1];
     robj *zobj;
     long offset = 0, limit = -1;
     int withscores = 0;
@@ -1819,35 +1825,37 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         minidx = 2; maxidx = 3;
     }
 
-    if (zslParseRange(c->argv[minidx],c->argv[maxidx],&range) != REDIS_OK) {
+    if (zslParseRange(argv[minidx],argv[maxidx],&range) != REDIS_OK) {
         addReplyError(c,"min or max is not a float");
-        return;
+        return -1;
     }
 
     /* Parse optional extra arguments. Note that ZCOUNT will exactly have
      * 4 arguments, so we'll never enter the following code path. */
-    if (c->argc > 4) {
-        int remaining = c->argc - 4;
+    if (argc > 4) {
+        int remaining = argc - 4;
         int pos = 4;
 
         while (remaining) {
-            if (remaining >= 1 && !strcasecmp(c->argv[pos]->ptr,"withscores")) {
+            if (remaining >= 1 && !strcasecmp(argv[pos]->ptr,"withscores")) {
                 pos++; remaining--;
                 withscores = 1;
-            } else if (remaining >= 3 && !strcasecmp(c->argv[pos]->ptr,"limit")) {
-                if ((getLongFromObjectOrReply(c, c->argv[pos+1], &offset, NULL) != REDIS_OK) ||
-                    (getLongFromObjectOrReply(c, c->argv[pos+2], &limit, NULL) != REDIS_OK)) return;
+            } else if (remaining >= 3 && !strcasecmp(argv[pos]->ptr,"limit")) {
+                if ((getLongFromObjectOrReply(c, argv[pos+1], &offset, NULL) != REDIS_OK) ||
+                    (getLongFromObjectOrReply(c, argv[pos+2], &limit, NULL) != REDIS_OK)) return -1;
                 pos += 3; remaining -= 3;
             } else {
                 addReply(c,shared.syntaxerr);
-                return;
+                return -1;
             }
         }
     }
 
     /* Ok, lookup the key and get the range */
     if ((zobj = lookupKeyReadOrReply(c,key,shared.emptymultibulk)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return;
+        checkType(c,zobj,REDIS_ZSET)) return -1;
+
+    redisAssertWithInfo(c,zobj,elements==NULL || limit > 0);
 
     if (zobj->encoding == REDIS_ENCODING_ZIPLIST) {
         unsigned char *zl = zobj->ptr;
@@ -1867,7 +1875,7 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         /* No "first" element in the specified interval. */
         if (eptr == NULL) {
             addReply(c, shared.emptymultibulk);
-            return;
+            return -1;
         }
 
         /* Get score pointer for the first element. */
@@ -1877,7 +1885,7 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         /* We don't know in advance how many matching elements there are in the
          * list, so we push this object that will represent the multi-bulk
          * length in the output buffer, and will "fix" it later */
-        replylen = addDeferredMultiBulkLength(c);
+        if (!elements) replylen = addDeferredMultiBulkLength(c);
 
         /* If there is an offset, just traverse the number of elements without
          * checking the score because that is done in the next loop. */
@@ -1902,15 +1910,19 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
             /* We know the element exists, so ziplistGet should always succeed */
             redisAssertWithInfo(c,zobj,ziplistGet(eptr,&vstr,&vlen,&vlong));
 
-            rangelen++;
             if (vstr == NULL) {
-                addReplyBulkLongLong(c,vlong);
+                if (!elements) addReplyBulkLongLong(c,vlong);
+                else elements[rangelen] = createStringObjectFromLongLong(vlong);
             } else {
-                addReplyBulkCBuffer(c,vstr,vlen);
+                if (!elements) addReplyBulkCBuffer(c,vstr,vlen);
+                else elements[rangelen] = createStringObject((char*)vstr,vlen);
             }
+            rangelen++;
 
             if (withscores) {
-                addReplyDouble(c,score);
+                if (!elements) addReplyDouble(c,score);
+                else elements[rangelen] = createStringObjectFromLongDouble(score);
+                rangelen++;
             }
 
             /* Move to next node */
@@ -1935,13 +1947,13 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         /* No "first" element in the specified interval. */
         if (ln == NULL) {
             addReply(c, shared.emptymultibulk);
-            return;
+            return -1;
         }
 
         /* We don't know in advance how many matching elements there are in the
          * list, so we push this object that will represent the multi-bulk
          * length in the output buffer, and will "fix" it later */
-        replylen = addDeferredMultiBulkLength(c);
+        if (!elements) replylen = addDeferredMultiBulkLength(c);
 
         /* If there is an offset, just traverse the number of elements without
          * checking the score because that is done in the next loop. */
@@ -1961,11 +1973,14 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
                 if (!zslValueLteMax(ln->score,&range)) break;
             }
 
+            if (!elements) addReplyBulk(c,ln->obj);
+            else { elements[rangelen] = ln->obj; incrRefCount(ln->obj); }
             rangelen++;
-            addReplyBulk(c,ln->obj);
 
             if (withscores) {
-                addReplyDouble(c,ln->score);
+                if (!elements) addReplyDouble(c,ln->score);
+                else elements[rangelen] = createStringObjectFromLongDouble(ln->score);
+                rangelen++;
             }
 
             /* Move to next node */
@@ -1979,19 +1994,16 @@ void genericZrangebyscoreCommand(redisClient *c, int reverse) {
         redisPanic("Unknown sorted set encoding");
     }
 
-    if (withscores) {
-        rangelen *= 2;
-    }
-
-    setDeferredMultiBulkLength(c, replylen, rangelen);
+    if (!elements) setDeferredMultiBulkLength(c, replylen, rangelen);
+    return rangelen;
 }
 
 void zrangebyscoreCommand(redisClient *c) {
-    genericZrangebyscoreCommand(c,0);
+    genericZrangebyscoreCommand(c,c->argv, c->argc,0,NULL);
 }
 
 void zrevrangebyscoreCommand(redisClient *c) {
-    genericZrangebyscoreCommand(c,1);
+    genericZrangebyscoreCommand(c,c->argv, c->argc,1,NULL);
 }
 
 void zcountCommand(redisClient *c) {
@@ -2178,4 +2190,55 @@ void zrankCommand(redisClient *c) {
 
 void zrevrankCommand(redisClient *c) {
     zrankGenericCommand(c, 1);
+}
+
+// [], key1, oldPriorityMin, oldPriorityMax, key2, newPrioririty, withscores
+void zremaddbyscoreCommand(redisClient *c) {
+    robj *elems[2] = { NULL, NULL };
+    robj *argv[8];
+    int found, j, withscores = 0;
+
+    if (c->argc == 7 && !strcasecmp(c->argv[6]->ptr,"withscores")) {
+        withscores = 1;
+    } else if (c->argc >= 7) {
+        addReply(c,shared.syntaxerr);
+        return;
+    }
+
+    // zrangebyscore
+    for (j = 0; j < 4; j++) argv[j] = c->argv[j];
+    argv[4] = createStringObject("limit", 5);
+    argv[5] = createStringObjectFromLongLong(0);
+    argv[6] = createStringObjectFromLongLong(1);
+    argv[7] = c->argv[6];
+    found = genericZrangebyscoreCommand(c,argv,(withscores ? 8 : 7),0,elems);
+    for (j = 4; j < 7; j++) {
+        decrRefCount(argv[j]);
+        argv[j] = NULL;
+    }
+
+    if (found == 0) addReply(c, shared.emptymultibulk);
+    if (found <= 0) return;
+    redisAssertWithInfo(c,NULL,elems[0]);
+
+    // zadd
+    argv[1] = c->argv[4];
+    argv[2] = c->argv[5];
+    argv[3] = elems[0];
+    if (zaddGenericCommand(c,argv,4,0,NULL) < 0) {
+        for (j = 0; j < found; j++) decrRefCount(elems[j]);
+        return;
+    }
+
+    // zrem
+    argv[0] = c->argv[0];
+    argv[1] = c->argv[1];
+    argv[2] = elems[0];
+    redisAssertWithInfo(c,NULL,1==zremGenericCommand(c,argv,3));
+
+    addReplyMultiBulkLen(c,found);
+    for (j = 0; j < found; j++) {
+        addReplyBulk(c,elems[j]);
+        decrRefCount(elems[j]);
+    }
 }

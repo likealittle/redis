@@ -14,9 +14,12 @@ src/transfer.sh
 src/configs
 redis.ds
 src/redis.conf
+deps/hiredis/obj.x86_64
+deps/lua/obj.x86_64
 deps/lua/src/lua
 deps/lua/src/luac
 deps/lua/src/liblua.a
+nbproject/
 .make-*
 .prerequisites
 *.dSYM
