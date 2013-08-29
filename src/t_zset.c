@@ -1852,8 +1852,11 @@ int genericZrangebyscoreCommand(redisClient *c, robj *argv[], int argc, int reve
     }
 
     /* Ok, lookup the key and get the range */
-    if ((zobj = lookupKeyReadOrReply(c,key,shared.emptymultibulk)) == NULL ||
-        checkType(c,zobj,REDIS_ZSET)) return -1;
+    if ((zobj = lookupKeyRead(c->db,key)) == NULL) {
+        if (!elements) addReply(c,shared.emptymultibulk);
+        return 0;
+    }
+    if (checkType(c,zobj,REDIS_ZSET)) return -1;
 
     redisAssertWithInfo(c,zobj,elements==NULL || limit > 0);
 
@@ -1874,8 +1877,8 @@ int genericZrangebyscoreCommand(redisClient *c, robj *argv[], int argc, int reve
 
         /* No "first" element in the specified interval. */
         if (eptr == NULL) {
-            addReply(c, shared.emptymultibulk);
-            return -1;
+            if (!elements) addReply(c, shared.emptymultibulk);
+            return 0;
         }
 
         /* Get score pointer for the first element. */
@@ -1912,7 +1915,7 @@ int genericZrangebyscoreCommand(redisClient *c, robj *argv[], int argc, int reve
 
             if (vstr == NULL) {
                 if (!elements) addReplyBulkLongLong(c,vlong);
-                else elements[rangelen] = createStringObjectFromLongLong(vlong);
+                else elements[rangelen] = createObject(REDIS_STRING,sdsfromlonglong(vlong));
             } else {
                 if (!elements) addReplyBulkCBuffer(c,vstr,vlen);
                 else elements[rangelen] = createStringObject((char*)vstr,vlen);
@@ -1946,8 +1949,8 @@ int genericZrangebyscoreCommand(redisClient *c, robj *argv[], int argc, int reve
 
         /* No "first" element in the specified interval. */
         if (ln == NULL) {
-            addReply(c, shared.emptymultibulk);
-            return -1;
+            if (!elements) addReply(c, shared.emptymultibulk);
+            return 0;
         }
 
         /* We don't know in advance how many matching elements there are in the
@@ -2194,51 +2197,39 @@ void zrevrankCommand(redisClient *c) {
 
 // [], key1, oldPriorityMin, oldPriorityMax, key2, newPrioririty, withscores
 void zremaddbyscoreCommand(redisClient *c) {
-    robj *elems[2] = { NULL, NULL };
-    robj *argv[8];
-    int found, j, withscores = 0;
-
-    if (c->argc == 7 && !strcasecmp(c->argv[6]->ptr,"withscores")) {
-        withscores = 1;
-    } else if (c->argc >= 7) {
-        addReply(c,shared.syntaxerr);
-        return;
-    }
+    robj *argv[7], *elem = NULL;
+    int found, j;
 
     // zrangebyscore
     for (j = 0; j < 4; j++) argv[j] = c->argv[j];
     argv[4] = createStringObject("limit", 5);
     argv[5] = createStringObjectFromLongLong(0);
     argv[6] = createStringObjectFromLongLong(1);
-    argv[7] = c->argv[6];
-    found = genericZrangebyscoreCommand(c,argv,(withscores ? 8 : 7),0,elems);
+    found = genericZrangebyscoreCommand(c,argv,7,0,&elem);
     for (j = 4; j < 7; j++) {
         decrRefCount(argv[j]);
         argv[j] = NULL;
     }
 
-    if (found == 0) addReply(c, shared.emptymultibulk);
+    if (found == 0) addReply(c, shared.nullbulk);
     if (found <= 0) return;
-    redisAssertWithInfo(c,NULL,elems[0]);
+    redisAssertWithInfo(c,NULL,found == 1 && elem != NULL);
 
     // zadd
     argv[1] = c->argv[4];
     argv[2] = c->argv[5];
-    argv[3] = elems[0];
+    argv[3] = elem;
     if (zaddGenericCommand(c,argv,4,0,NULL) < 0) {
-        for (j = 0; j < found; j++) decrRefCount(elems[j]);
+        decrRefCount(elem);
         return;
     }
 
     // zrem
     argv[0] = c->argv[0];
     argv[1] = c->argv[1];
-    argv[2] = elems[0];
+    argv[2] = elem;
     redisAssertWithInfo(c,NULL,1==zremGenericCommand(c,argv,3));
 
-    addReplyMultiBulkLen(c,found);
-    for (j = 0; j < found; j++) {
-        addReplyBulk(c,elems[j]);
-        decrRefCount(elems[j]);
-    }
+    addReplyBulk(c,elem);
+    decrRefCount(elem);
 }

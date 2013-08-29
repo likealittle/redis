@@ -475,15 +475,15 @@ start_server {tags {"zset"}} {
             r del zseta zsetb setc
 
             # popping from empty set
-            assert_equal {} [r zremaddbyscore zseta -inf inf zsetb 20 withscores]
+            assert_equal {} [r zremaddbyscore zseta -inf inf zsetb 20]
             assert_equal {} [r zrange zsetb 0 100 withscores]
             assert_equal {} [r zrange zseta 0 100 withscores]
 
             # popping and adding to an empty set
-            r zadd zseta 10 x
-            assert_equal {} [r zremaddbyscore zseta 20 inf zsetb 20 withscores]
-            assert_equal {x 10} [r zremaddbyscore zseta 10 20 zsetb 20 withscores]
-            assert_equal {x 20} [r zrange zsetb 0 100 withscores]
+            r zadd zseta 10 7
+            assert_equal {} [r zremaddbyscore zseta 20 inf zsetb 20]
+            assert_equal 7 [r zremaddbyscore zseta 10 20 zsetb 20]
+            assert_equal {7 20} [r zrange zsetb 0 100 withscores]
             assert_equal {} [r zrange zseta 0 100 withscores]
             assert_equal 0 [r exists zseta]
             assert_equal {} [r zremaddbyscore zseta -inf inf zsetb 20]
@@ -507,7 +507,7 @@ start_server {tags {"zset"}} {
             assert_equal {a 15 y 30 x 50} [r zrange zsetb 0 100 withscores]
             assert_equal {} [r zremaddbyscore zseta 40 50 zsetb 10]
             assert_equal {a 15 y 30 x 50} [r zrange zsetb 0 100 withscores]
-            assert_equal {z 30} [r zremaddbyscore zseta 0 50 zsetb 10 withscores]
+            assert_equal z [r zremaddbyscore zseta 0 50 zsetb 10]
             assert_equal {z a y x} [r zrange zsetb 0 100]
             assert_equal {} [r zrange zseta 0 100 withscores]
             assert_equal {} [r zremaddbyscore zseta -inf inf zsetb 100]
